@@ -48,7 +48,8 @@ def test_log_request(metrics_collector):
 def test_get_latest_server_metrics(metrics_collector):
     """Test getting latest server metrics."""
     # Add some metrics
-    metrics_collector.server_metrics = [
+    metrics_collector.server_metrics.clear()
+    sample_metrics = [
         {
             "server_id": "server1",
             "timestamp": 1.0,
@@ -74,6 +75,9 @@ def test_get_latest_server_metrics(metrics_collector):
             "health_status": "healthy"
         }
     ]
+    metrics_collector.server_metrics.extend(sample_metrics)
+    for metric in sample_metrics:
+        metrics_collector.latest_metrics[metric["server_id"]] = metric
     
     latest = metrics_collector.get_latest_server_metrics()
     assert "server1" in latest

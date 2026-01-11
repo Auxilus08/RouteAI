@@ -8,7 +8,7 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 
 
 class MetricsCollector:
@@ -32,11 +32,14 @@ class MetricsCollector:
         self.server_ids = server_ids
         self.polling_interval = polling_interval
         self.client = httpx.AsyncClient(timeout=5.0)
-        
-        # Data storage
-        self.server_metrics: List[Dict[str, Any]] = []
+
+        # Data storage (bounded)
+        self.server_metrics: deque = deque(maxlen=1000)
         self.request_logs: List[Dict[str, Any]] = []
         self.lock = threading.Lock()
+
+        # Latest metrics per server for O(1) access
+        self.latest_metrics: Dict[str, Dict[str, Any]] = {}
         
         # Polling control
         self.polling_task: Optional[asyncio.Task] = None
@@ -44,29 +47,43 @@ class MetricsCollector:
     
     async def fetch_server_health(self, server_url: str, server_id: str) -> Optional[Dict[str, Any]]:
         """Fetch health metrics from a server."""
-        try:
-            response = await self.client.get(f"{server_url}/health")
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    "server_id": server_id,
-                    "timestamp": time.time(),
-                    "cpu_utilization": data.get("cpu_utilization", 0.0),
-                    "active_requests": data.get("active_requests", 0),
-                    "avg_response_time": data.get("avg_response_time", 0.0),
-                    "health_status": data.get("health_status", "unknown")
-                }
-        except Exception as e:
-            # Server might be down or unreachable
-            return {
-                "server_id": server_id,
-                "timestamp": time.time(),
-                "cpu_utilization": 0.0,
-                "active_requests": 0,
-                "avg_response_time": 0.0,
-                "health_status": "unreachable"
-            }
-        return None
+        # Retry with exponential backoff for transient errors
+        for attempt in range(3):
+            try:
+                response = await self.client.get(f"{server_url}/health")
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "server_id": server_id,
+                        "timestamp": time.time(),
+                        "cpu_utilization": data.get("cpu_utilization", 0.0),
+                        "active_requests": data.get("active_requests", 0),
+                        "avg_response_time": data.get("avg_response_time", 0.0),
+                        "health_status": data.get("health_status", "unknown")
+                    }
+                else:
+                    # Non-200 responses treated as unreachable for now
+                    return {
+                        "server_id": server_id,
+                        "timestamp": time.time(),
+                        "cpu_utilization": 0.0,
+                        "active_requests": 0,
+                        "avg_response_time": 0.0,
+                        "health_status": "unreachable"
+                    }
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                await asyncio.sleep((2 ** attempt) * 0.1)
+                continue
+
+        # After retries, mark unreachable
+        return {
+            "server_id": server_id,
+            "timestamp": time.time(),
+            "cpu_utilization": 0.0,
+            "active_requests": 0,
+            "avg_response_time": 0.0,
+            "health_status": "unreachable"
+        }
     
     async def poll_servers(self):
         """Periodically poll all servers for health metrics."""
@@ -76,6 +93,8 @@ class MetricsCollector:
                 if metrics:
                     with self.lock:
                         self.server_metrics.append(metrics)
+                        # update latest metrics dict for O(1) reads
+                        self.latest_metrics[server_id] = metrics
             await asyncio.sleep(self.polling_interval)
     
     async def start_polling(self):
@@ -131,7 +150,7 @@ class MetricsCollector:
         with self.lock:
             if not self.server_metrics:
                 return pd.DataFrame()
-            return pd.DataFrame(self.server_metrics)
+            return pd.DataFrame(list(self.server_metrics))
     
     def get_request_logs_df(self) -> pd.DataFrame:
         """Get request logs as a pandas DataFrame."""
@@ -148,18 +167,18 @@ class MetricsCollector:
             Dictionary mapping server_id to latest metrics
         """
         with self.lock:
-            if not self.server_metrics:
-                return {}
-            
-            latest = {}
-            for metric in reversed(self.server_metrics):
-                server_id = metric["server_id"]
-                if server_id not in latest:
-                    latest[server_id] = metric
-            return latest
+            # Return a shallow copy of the latest metrics dict for thread-safety
+            return dict(self.latest_metrics)
+
+    async def get_latest_server_metrics_async(self) -> Dict[str, Dict[str, Any]]:
+        """Async version returning latest metrics per server in O(1)."""
+        # No await inside, but keep signature async to be awaitable by callers
+        with self.lock:
+            return dict(self.latest_metrics)
     
     def clear_metrics(self):
         """Clear all collected metrics (useful for starting a new experiment)."""
         with self.lock:
             self.server_metrics.clear()
             self.request_logs.clear()
+            self.latest_metrics.clear()

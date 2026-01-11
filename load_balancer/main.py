@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 import uvicorn
+import inspect
 
 from load_balancer.proxy import Proxy
 from load_balancer.round_robin import RoundRobinRouter
@@ -78,7 +79,10 @@ async def proxy_request(request: Request, path: str):
         )
     
     # Select server based on strategy
-    selected_server = router.select_server()
+    if inspect.iscoroutinefunction(router.select_server):
+        selected_server = await router.select_server()
+    else:
+        selected_server = router.select_server()
     server_url = router.get_server_url(selected_server)
     
     # Get request body if present
@@ -107,7 +111,10 @@ async def proxy_request(request: Request, path: str):
     
     # Update RL agent with reward if using RL routing
     if routing_strategy == "rl_agent" and isinstance(router, RLRouter):
-        router.update_reward(result['response_time_ms'], result['success'])
+        if inspect.iscoroutinefunction(router.update_reward):
+            await router.update_reward(result['response_time_ms'], result['success'])
+        else:
+            router.update_reward(result['response_time_ms'], result['success'])
     
     # Return response
     response = Response(

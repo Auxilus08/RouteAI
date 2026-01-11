@@ -2,7 +2,7 @@
 RL-based routing strategy for load balancing.
 """
 from typing import List, Dict, Any, Optional
-import threading
+import asyncio
 
 from rl.q_learning import QLearningAgent
 from rl.state_encoder import StateEncoder
@@ -43,35 +43,36 @@ class RLRouter:
             config_path=config_path
         )
         
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         
         # Track current state for updates
         self.last_state: Optional[tuple] = None
         self.last_action: Optional[int] = None
     
-    def select_server(self) -> Dict[str, Any]:
+    async def select_server(self) -> Dict[str, Any]:
         """
         Select a server using the RL agent.
         
         Returns:
             Selected server dictionary
         """
-        # Get current state from metrics
-        latest_metrics = self.metrics_collector.get_latest_server_metrics()
+        # Get current state from metrics (async)
+        latest_metrics = await self.metrics_collector.get_latest_server_metrics_async()
         current_state = self.state_encoder.encode_state(latest_metrics, self.server_ids)
-        
+
         # Select action (server)
+        # If the agent's select_action remains sync, call it directly; it's lightweight.
         action = self.agent.select_action(current_state)
         selected_server = self.servers[action]
         
         # Store for reward update
-        with self.lock:
+        async with self.lock:
             self.last_state = current_state
             self.last_action = action
         
         return selected_server
     
-    def update_reward(self, response_time_ms: float, success: bool):
+    async def update_reward(self, response_time_ms: float, success: bool):
         """
         Update the RL agent with reward feedback.
         
@@ -84,13 +85,13 @@ class RLRouter:
         
         # Calculate reward
         reward = self.agent.calculate_reward(response_time_ms, success)
-        
-        # Get next state
-        latest_metrics = self.metrics_collector.get_latest_server_metrics()
+
+        # Get next state (async)
+        latest_metrics = await self.metrics_collector.get_latest_server_metrics_async()
         next_state = self.state_encoder.encode_state(latest_metrics, self.server_ids)
-        
+
         # Update Q-table
-        with self.lock:
+        async with self.lock:
             self.agent.update(
                 state=self.last_state,
                 action=self.last_action,

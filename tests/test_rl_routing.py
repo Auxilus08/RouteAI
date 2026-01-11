@@ -2,7 +2,7 @@
 Tests for RL-based routing.
 """
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock, AsyncMock
 from load_balancer.rl_routing import RLRouter
 from metrics.collector import MetricsCollector
 
@@ -21,7 +21,7 @@ def sample_servers():
 def mock_metrics_collector():
     """Mock metrics collector."""
     collector = Mock(spec=MetricsCollector)
-    collector.get_latest_server_metrics.return_value = {
+    metrics_payload = {
         "server1": {
             "cpu_utilization": 30.0,
             "active_requests": 2,
@@ -38,6 +38,8 @@ def mock_metrics_collector():
             "avg_response_time": 300.0
         }
     }
+    collector.get_latest_server_metrics.return_value = metrics_payload
+    collector.get_latest_server_metrics_async = AsyncMock(return_value=metrics_payload)
     return collector
 
 
@@ -52,13 +54,14 @@ def test_rl_router_initialization(sample_servers, mock_metrics_collector):
 
 
 @pytest.mark.unit
-def test_rl_router_select_server(sample_servers, mock_metrics_collector):
+@pytest.mark.asyncio
+async def test_rl_router_select_server(sample_servers, mock_metrics_collector):
     """Test server selection using RL agent."""
     router = RLRouter(sample_servers, mock_metrics_collector)
-    
+
     # Select a server
-    server = router.select_server()
-    
+    server = await router.select_server()
+
     # Should return one of the servers
     assert server in sample_servers
     assert 'id' in server
@@ -67,16 +70,17 @@ def test_rl_router_select_server(sample_servers, mock_metrics_collector):
 
 
 @pytest.mark.unit
-def test_rl_router_update_reward(sample_servers, mock_metrics_collector):
+@pytest.mark.asyncio
+async def test_rl_router_update_reward(sample_servers, mock_metrics_collector):
     """Test updating reward."""
     router = RLRouter(sample_servers, mock_metrics_collector)
-    
+
     # Select a server first (this sets last_state and last_action)
-    router.select_server()
-    
+    await router.select_server()
+
     # Update reward
-    router.update_reward(response_time_ms=100.0, success=True)
-    
+    await router.update_reward(response_time_ms=100.0, success=True)
+
     # Should not raise an exception
     # The agent's Q-table should be updated
 

@@ -54,6 +54,8 @@ class ExperimentRunner:
         self.lb_config = self.config['load_balancer']
         self.server_processes = []
         self.server_task = None
+        # Uvicorn logging config
+        self.uvicorn_log_level = self.config.get('uvicorn', {}).get('log_level', 'info')
     
     async def start_servers(self):
         """Start backend servers."""
@@ -100,49 +102,44 @@ class ExperimentRunner:
         # Ensure port is available before starting
         await wait_for_port_release(self.lb_config['host'], self.lb_config['port'], timeout=5.0)
         
-        # Start load balancer
+        # Start load balancer using a shared config and clearer shutdown
         config = uvicorn.Config(
             app,
             host=self.lb_config['host'],
             port=self.lb_config['port'],
-            log_level="warning"  # Reduce logging
+            log_level=self.uvicorn_log_level
         )
         server = uvicorn.Server(config)
+
+        # Run server in background and generate traffic concurrently
         lb_task = asyncio.create_task(server.serve())
-        
-        # Wait for LB to start
-        await asyncio.sleep(2)
-        
+        # Wait briefly for LB to be ready
+        await asyncio.sleep(1)
+
         try:
             # Generate traffic
             from traffic.generator import generate_traffic
             lb_url = f"http://{self.lb_config['host']}:{self.lb_config['port']}"
             duration = num_requests / request_rate
-            
+
             print(f"Generating {num_requests} requests at {request_rate} req/s...")
             await generate_traffic(lb_url, request_rate, duration, max_concurrent=50)
         finally:
-            # Properly shut down the server - let it exit gracefully
+            # Ask server to exit gracefully
             server.should_exit = True
-            
-            # Wait for server to exit gracefully (don't cancel immediately)
-            if not lb_task.done():
+            # Wait for server to stop, with a graceful timeout
+            try:
+                await asyncio.wait_for(lb_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                server.force_exit = True
                 try:
-                    # Give server time to exit gracefully (it checks should_exit periodically)
-                    await asyncio.wait_for(lb_task, timeout=5.0)
-                except asyncio.TimeoutError:
-                    # If graceful shutdown times out, force exit
-                    server.force_exit = True
-                    # Give it one more chance
+                    await asyncio.wait_for(lb_task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    lb_task.cancel()
                     try:
-                        await asyncio.wait_for(lb_task, timeout=2.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        # Last resort: cancel the task
-                        lb_task.cancel()
-                        try:
-                            await asyncio.wait_for(lb_task, timeout=1.0)
-                        except (asyncio.CancelledError, asyncio.TimeoutError):
-                            pass
+                        await asyncio.wait_for(lb_task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
             
             # Cleanup proxy
             from load_balancer.main import proxy as global_proxy
@@ -189,9 +186,10 @@ class ExperimentRunner:
             # Run RL agent experiment (metrics will be appended)
             await self.run_strategy_experiment("rl_agent", metrics_collector, num_requests, request_rate)
             rl_logs = metrics_collector.get_request_logs_df().copy()
-            # Get only the new logs (after Round Robin)
-            if len(rl_logs) > len(rr_logs):
-                rl_logs_only = rl_logs.iloc[len(rr_logs):].copy()
+            # Get only the new logs (after Round Robin) using timestamps
+            if not rr_logs.empty and not rl_logs.empty:
+                cutoff = rr_logs['timestamp'].max()
+                rl_logs_only = rl_logs[rl_logs['timestamp'] > cutoff].copy()
                 rl_logs_only['routing_strategy'] = 'rl_agent'
                 all_logs = pd.concat([rr_logs, rl_logs_only], ignore_index=True)
             else:
@@ -236,8 +234,26 @@ class ExperimentRunner:
         """Cleanup processes."""
         print("\nCleaning up...")
         for process in self.server_processes:
-            process.terminate()
-            process.wait()
+            try:
+                # First try graceful shutdown
+                process.send_signal(signal.SIGINT)
+            except Exception:
+                pass
+        # Give processes a moment to exit
+        await asyncio.sleep(1)
+        for process in self.server_processes:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
         self.server_processes.clear()
         print("Cleanup complete")
 

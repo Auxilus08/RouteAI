@@ -32,3 +32,4 @@ q_table_*.pkl
 .DS_Store
 .vscode/
 .idea/
+.pytest_cache/

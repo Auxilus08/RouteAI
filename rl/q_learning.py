@@ -6,6 +6,7 @@ import pickle
 from typing import Dict, Tuple, List, Optional
 from pathlib import Path
 import yaml
+from functools import lru_cache
 
 
 class QLearningAgent:
@@ -64,10 +65,14 @@ class QLearningAgent:
         Returns:
             Q-value (0.0 if not initialized)
         """
-        if state not in self.q_table:
-            # Initialize with zeros
-            self.q_table[state] = np.zeros(self.num_actions)
+        self.ensure_state_initialized(state)
         return self.q_table[state][action]
+
+    def ensure_state_initialized(self, state: Tuple[int, ...]):
+        """
+        Ensure a state's Q-entry exists. Uses setdefault for concise lazy init.
+        """
+        self.q_table.setdefault(state, np.zeros(self.num_actions))
     
     def select_action(self, state: Tuple[int, ...], available_actions: List[int] = None) -> int:
         """
@@ -82,20 +87,21 @@ class QLearningAgent:
         """
         if available_actions is None:
             available_actions = list(range(self.num_actions))
-        
-        # Initialize Q-values for this state if needed
-        if state not in self.q_table:
-            self.q_table[state] = np.zeros(self.num_actions)
-        
-        # Exploration: random action
+
+        # Ensure Q-values exist for state
+        self.ensure_state_initialized(state)
+
+        # Exploration: random action among available
         if np.random.random() < self.exploration_rate:
-            return np.random.choice(available_actions)
-        
-        # Exploitation: best action
+            return int(np.random.choice(available_actions))
+
+        # Exploitation: choose best action among available actions using masked Q-values
         q_values = self.q_table[state]
-        # Filter to available actions
-        available_q_values = {action: q_values[action] for action in available_actions}
-        best_action = max(available_q_values, key=available_q_values.get)
+        available_mask = np.zeros(self.num_actions, dtype=bool)
+        available_mask[available_actions] = True
+        q_values_masked = q_values.copy()
+        q_values_masked[~available_mask] = -np.inf
+        best_action = int(np.argmax(q_values_masked))
         return best_action
     
     def update(
@@ -114,23 +120,35 @@ class QLearningAgent:
             reward: Reward received
             next_state: Next state
         """
-        # Initialize Q-values if needed
-        if state not in self.q_table:
-            self.q_table[state] = np.zeros(self.num_actions)
-        if next_state not in self.q_table:
-            self.q_table[next_state] = np.zeros(self.num_actions)
-        
+        # Ensure Q-values exist
+        self.ensure_state_initialized(state)
+        self.ensure_state_initialized(next_state)
+
         # Current Q-value
         current_q = self.q_table[state][action]
-        
-        # Maximum Q-value for next state
-        max_next_q = np.max(self.q_table[next_state])
+
+        # Maximum Q-value for next state (cached wrapper)
+        max_next_q = self._cached_max_q(next_state)
         
         # Bellman equation: Q(s,a) = Q(s,a) + α[r + γ*max(Q(s',a')) - Q(s,a)]
         new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q)
         
         self.q_table[state][action] = new_q
         self.total_updates += 1
+        # Invalidate cached max-Qs for affected states to keep cache consistent.
+        # We clear the whole cache; acceptable tradeoff for moderate cache sizes.
+        try:
+            self._cached_max_q.cache_clear()
+        except Exception:
+            pass
+
+    @lru_cache(maxsize=4096)
+    def _cached_max_q(self, state: Tuple[int, ...]) -> float:
+        """
+        Cached wrapper around max Q computation for a state. Cache is cleared
+        when updates occur to keep values consistent.
+        """
+        return float(np.max(self.q_table[state]))
     
     def calculate_reward(self, response_time_ms: float, success: bool) -> float:
         """
@@ -145,11 +163,15 @@ class QLearningAgent:
         """
         if not success:
             return self.reward_config['failure_penalty']
-        
-        # Reward is negative response time (minimize latency)
-        # Scale to reasonable range (e.g., -100 to 0 for 0-100ms)
-        reward = -response_time_ms / 10.0  # Scale factor
-        return reward
+        # Normalize reward using configured latency bounds to keep rewards
+        # comparable across experiments.
+        min_lat = self.reward_config.get('min_latency_ms', 0.0)
+        max_lat = self.reward_config.get('max_latency_ms', 1000.0)
+        scale = self.reward_config.get('scale', 100.0)
+        denom = max(1e-6, (max_lat - min_lat))
+        normalized = (response_time_ms - min_lat) / denom
+        reward = -normalized * scale
+        return float(reward)
     
     def decay_exploration(self):
         """Decay exploration rate after an episode."""
