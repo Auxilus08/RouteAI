@@ -1,0 +1,25 @@
+servers:
+  - id: "server1"
+    host: "localhost"
+    port: 8001
+    base_delay_ms: 50  # Base response delay in milliseconds
+  - id: "server2"
+    host: "localhost"
+    port: 8002
+    base_delay_ms: 75
+  - id: "server3"
+    host: "localhost"
+    port: 8003
+    base_delay_ms: 100
+
+load_balancer:
+  host: "localhost"
+  port: 8080
+
+metrics:
+  polling_interval_seconds: 1.0  # How often to poll server health
+
+traffic:
+  target_url: "http://localhost:8080"
+  request_rate: 10  # Requests per second
+  duration_seconds: 60
