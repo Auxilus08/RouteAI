@@ -108,5 +108,5 @@ def test_rl_router_get_statistics(sample_servers, mock_metrics_collector):
     router = RLRouter(sample_servers, mock_metrics_collector)
     stats = router.get_statistics()
     assert isinstance(stats, dict)
-    assert 'num_states' in stats
-    assert 'episode_count' in stats
+    assert 'epsilon' in stats
+    assert 'buffer_size' in stats

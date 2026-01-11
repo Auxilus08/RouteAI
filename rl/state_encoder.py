@@ -1,7 +1,7 @@
 """
 State encoder for converting server metrics to discrete state representation.
 """
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 import yaml
 from pathlib import Path
 
@@ -27,6 +27,10 @@ class StateEncoder:
         self.cpu_thresholds = thresholds['cpu_thresholds']
         self.active_requests_thresholds = thresholds['active_requests_thresholds']
         self.response_time_thresholds = thresholds['response_time_thresholds_ms']
+        scales = thresholds.get('scales', {})
+        self.cpu_scale = scales.get('cpu', 100.0)
+        self.active_requests_scale = scales.get('active_requests', 50.0)
+        self.response_time_scale = scales.get('response_time_ms', 500.0)
         
         # Load levels: 0 = low, 1 = medium, 2 = high
         self.load_levels = ["low", "medium", "high"]
@@ -92,6 +96,29 @@ class StateEncoder:
             state.append(load_level)
         
         return tuple(state)
+
+    def encode_state_continuous(self, server_metrics: Dict[str, Dict[str, Any]], server_ids: list) -> List[float]:
+        """
+        Encode server metrics into a flat continuous feature vector suitable for DQN.
+
+        Each server contributes [cpu_norm, active_requests_norm, response_time_norm, reachable_flag].
+        Missing or unreachable servers are encoded as zeros with reachable_flag=0.
+        """
+        features: List[float] = []
+        for server_id in server_ids:
+            metrics = server_metrics.get(server_id)
+            if metrics:
+                cpu = float(metrics.get('cpu_utilization', 0.0)) / max(1e-6, self.cpu_scale)
+                active = float(metrics.get('active_requests', 0.0)) / max(1e-6, self.active_requests_scale)
+                rt = float(metrics.get('avg_response_time', 0.0)) / max(1e-6, self.response_time_scale)
+                reachable = 0.0 if metrics.get('health_status') == 'unreachable' else 1.0
+            else:
+                cpu = 0.0
+                active = 0.0
+                rt = 0.0
+                reachable = 0.0
+            features.extend([cpu, active, rt, reachable])
+        return features
     
     def get_state_space_size(self, num_servers: int) -> int:
         """

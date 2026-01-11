@@ -5,6 +5,19 @@ q_learning:
   exploration_decay: 0.995  # Epsilon decay factor per episode
   min_exploration_rate: 0.01
 
+dqn:
+  hidden_sizes: [128, 128]
+  learning_rate: 0.001
+  discount_factor: 0.99
+  epsilon_start: 1.0
+  epsilon_min: 0.05
+  epsilon_decay: 0.995
+  buffer_size: 50000
+  batch_size: 64
+  target_update_freq: 200
+  train_start: 500
+  gradient_clip: 1.0
+
 state_encoding:
   cpu_thresholds:
     low: 50.0  # CPU < 50% = low load
@@ -15,6 +28,10 @@ state_encoding:
   response_time_thresholds_ms:
     low: 100.0
     medium: 200.0
+  scales:
+    cpu: 100.0
+    active_requests: 50.0
+    response_time_ms: 500.0
 
 reward:
   # Reward = -response_time_ms (minimize latency)
