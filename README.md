@@ -265,6 +265,54 @@ Results are saved to the `reports/` directory:
   - `latency_distribution.png`
   - `comparison_summary.png`
 
+## Testing
+
+The project includes a comprehensive test suite using pytest.
+
+### Running Tests
+
+```bash
+# Install test dependencies (if not already installed)
+pip install -r requirements.txt
+
+# Run all tests
+pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run specific test file
+pytest tests/test_round_robin.py
+
+# Run tests with coverage
+pytest --cov=. --cov-report=html
+
+# Run only unit tests
+pytest -m unit
+
+# Run only integration tests
+pytest -m integration
+```
+
+### Test Coverage
+
+The test suite covers:
+- Round Robin routing algorithm
+- Q-Learning agent (initialization, action selection, Q-value updates)
+- State encoder (state representation)
+- Metrics collector (logging, polling)
+- RL routing integration
+- Metrics analyzer (statistics, comparisons)
+
+### Writing New Tests
+
+Tests are located in the `tests/` directory. Follow these conventions:
+- Test files: `test_*.py`
+- Test functions: `test_*`
+- Use pytest fixtures for setup
+- Mark slow tests with `@pytest.mark.slow`
+- Mark integration tests with `@pytest.mark.integration`
+
 ## Troubleshooting
 
 ### Servers Not Starting
